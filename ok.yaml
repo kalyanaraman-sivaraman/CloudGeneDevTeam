@@ -1,80 +1,10 @@
-
-# AWS Configuration Sample
-
-# Default AWS settings
-default: &default_aws
-  region: us-west-2
-  output: json
-
-# AWS Profiles
-aws_profiles:
-  default:
-    <<: *default_aws
-    aws_access_key_id: AKIAIOSFODNN7EXAMPLE
-    aws_secret_access_key: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
-
-  development:
-    <<: *default_aws
-    region: us-east-1
-    aws_access_key_id: AKIAIOSFODNN7EXAMPLE2
-    aws_secret_access_key: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY2
-
-  production:
-    <<: *default_aws
-    region: eu-west-1
-    aws_access_key_id: AKIAIOSFODNN7EXAMPLE3
-    aws_secret_access_key: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY3
-
-# S3 Bucket Configuration
-s3_buckets:
-  logs:
-    name: my-app-logs
-    region: us-west-2
-  backups:
-    name: my-app-backups
-    region: us-east-1
-
-# EC2 Instance Configuration
-ec2_instances:
-  - name: web-server-1
-    instance_type: t2.micro
-    ami: ami-12345678
-    region: us-west-2
-  - name: database-server
-    instance_type: m5.large
-    ami: ami-87654321
-    region: us-east-1
-
-# CloudWatch Alarms
-cloudwatch_alarms:
-  high_cpu_utilization:
-    namespace: AWS/EC2
-    metric_name: CPUUtilization
-    threshold: 80
-    comparison_operator: GreaterThanThreshold
-    period: 300
-    evaluation_periods: 2
-
-# IAM Roles
-iam_roles:
-  - name: ec2-s3-access
-    description: Allows EC2 instances to access specific S3 buckets
-    managed_policies:
-      - arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess
-
-# VPC Configuration
-vpc:
-  cidr_block: 10.0.0.0/16
-  subnets:
-    - cidr_block: 10.0.1.0/24
-      availability_zone: us-west-2a
-    - cidr_block: 10.0.2.0/24
-      availability_zone: us-west-2b
-
-# Lambda Functions
-lambda_functions:
-  - name: data-processor
-    runtime: python3.8
-    handler: main.handler
-    memory_size: 128
-    timeout: 30
+AWSTemplateFormatVersion: '2010-09-09'
+Resources:
+  InternetGateway:
+    Type: 'AWS::EC2::InternetGateway'
+    Properties:
+      Tags:
+        - Key: 'Project'
+          Value: 'CloudGen'
+        - Key: 'key'
+          Value: 'value'
