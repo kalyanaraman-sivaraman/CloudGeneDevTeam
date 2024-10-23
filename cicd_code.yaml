@@ -1,93 +1,63 @@
-name: CI
+name: Deploy Node.js App to EKS
 
 on:
   push:
-    branches: [main]
-  pull_request:
-    branches: [main]
+    branches:
+      - main
+
+env:
+  AWS_REGION: us-east-2
+  ECR_REPOSITORY: my-app
+  EKS_CLUSTER_NAME: my-cluster
+  EKS_CLUSTER_ROLE_ARN: ${{ secrets.EKS_CLUSTER_ROLE_ARN }}
 
 jobs:
 
   build:
-    runs-on: ubuntu-latest
-    
-    steps:
-    - uses: actions/checkout@v3
-    - name: Use Node.js
-      uses: actions/setup-node@v3
-      with:
-        node-version: '16.x'
-        
-    - run: npm ci
-    - run: npm run build
-      
-    - name: Upload artifact
-      uses: actions/upload-artifact@v3
-      with:
-        name: dist-files
-        path: build
-        
-  test:
-    needs: build
-    runs-on: ubuntu-latest
-     
-    steps:
-    - uses: actions/checkout@v3
-    - name: Use Node.js
-      uses: actions/setup-node@v3
-      with:
-        node-version: '16.x'
-        
-    - run: npm ci
-    - run: npm test
-      
-  deploy:
-    needs: [build, test]
+    name: Build and Push Image
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v3
+    - name: Checkout code
+      uses: actions/checkout@v2
+
     - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v1
       with:
         aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: us-east-2
-        
+        aws-region: ${{ env.AWS_REGION }}
+
     - name: Login to Amazon ECR
       id: login-ecr
       uses: aws-actions/amazon-ecr-login@v1
-      
-    - name: Build, tag, and push image to Amazon ECR
+
+    - name: Build, tag, and push docker image
       env:
         ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-        ECR_REPOSITORY: my-ecr-repo
-        IMAGE_TAG: ${{ github.sha }}
       run: |
-        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
-        docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
-        
-    - name: Deploy to EKS
-      run: |
-        kubectl apply -f k8s/
-        kubectl set image deployment/my-app-name my-app=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
-        
-  notify:
-    needs: [deploy]
+        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:${{ github.sha }} .
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY:${{ github.sha }}
+
+  deploy:
+    name: Deploy to EKS
+    needs: build
     runs-on: ubuntu-latest
-    
+
     steps:
-    - name: Notify Slack
-      env:
-        SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
-      uses: 8398a7/action-slack@v3
+    - name: Checkout code
+      uses: actions/checkout@v2
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v1
       with:
-        status: ${{ job.status }}
-        fields: repo,message,commit,author,action,eventName,ref,workflow
-        author_name: Deployment workflow successful
-        mention: here
-        if_mention: failure,cancelled
-        job_name: Notify slack
-        channel: devops-alerts
-        icon_emoji: ':github:'
-        username: GitHub Actions Workflow
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Deploy to Amazon EKS
+      env:
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+      run: |
+        kubectl set image deployment/my-app-deployment my-app=$ECR_REGISTRY/$ECR_REPOSITORY:${{ github.sha }} --record
+        kubectl rollout status deployment/my-app-deployment
