@@ -1,7 +1,10 @@
-name: Nodejs-React-MongoDB-EKS
+name: CI/CD Pipeline
 
 on:
   push:
+    branches:
+      - main
+  pull_request:
     branches:
       - main
 
@@ -14,51 +17,30 @@ jobs:
     runs-on: ubuntu-latest
     
     steps:
-    - name: Checkout Code
-      uses: actions/checkout@v2
-    
-    - name: Setup Node.js
-      uses: actions/setup-node@v2
+    - uses: actions/checkout@v3
+    - name: Use Node.js
+      uses: actions/setup-node@v3
       with:
         node-version: '16'
         
-    - name: Install Dependencies
-      run: |
-        npm ci
-        npm run build
-        
-    - name: Upload Artifact
-      uses: actions/upload-artifact@v2
+    - run: npm ci
+    - run: npm run build
+    - run: npm test
+      
+    - name: Upload artifact
+      uses: actions/upload-artifact@v3
       with:
         name: dist-files
         path: build
         
-  test:
-    needs: build
-    runs-on: ubuntu-latest
-    
-    steps:
-    - name: Checkout Code
-      uses: actions/checkout@v2
-      
-    - name: Setup Node.js
-      uses: actions/setup-node@v2
-      with:
-        node-version: '16'
-        
-    - name: Install Dependencies
-      run: npm ci
-      
-    - name: Run Tests
-      run: npm test
-      
   deploy-eks:
-    needs: [build, test]
+    needs: build
+    name: Deploy to EKS
     runs-on: ubuntu-latest
-    
+
     steps:
-    - name: Checkout Code
-      uses: actions/checkout@v2
+    - name: Checkout
+      uses: actions/checkout@v3
       
     - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v1
@@ -68,8 +50,7 @@ jobs:
         aws-region: ${{ env.AWS_REGION }}
         
     - name: Login to Amazon ECR
-      id: login-ecr
-      uses: aws-actions/amazon-ecr-login@v1
+      run: aws ecr get-login-password --region ${{ env.AWS_REGION }} | docker login --username AWS --password-stdin ${{ secrets.AWS_ECR_URI }}
       
     - name: Build, tag, and push image to Amazon ECR
       env:
@@ -82,8 +63,79 @@ jobs:
         
     - name: Deploy to Amazon EKS
       env:
-        EKS_NAME: my-cluster
-        EKS_REGION: ${{ env.AWS_REGION }}
+        APP_NAME: my-app
+        DEPLOY_ENV: production
       run: |
-        aws eks update-kubeconfig --name $EKS_NAME --region $EKS_REGION
-        kubectl apply -f kubernetes/
+        kubectl set image deployment/$APP_NAME-$DEPLOY_ENV app=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+        
+  deploy-lambda:
+    needs: build
+    name: Deploy to Lambda
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+      
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+        
+    - name: Install dependencies
+      run: pip install -r requirements.txt
+      
+    - name: Package Lambda function
+      run: zip -r lambda_function.zip .
+      
+    - name: Deploy to AWS Lambda
+      uses: aws-actions/aws-lambda-deploy@v0.1.1
+      with:
+        function-name: your_lambda_function_name
+        zip-file: lambda_function.zip
+      env:
+        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        AWS_REGION: ${{ env.AWS_REGION }}
+
+  deploy-mongodb:
+    needs: build  
+    name: Deploy to MongoDB
+    runs-on: ubuntu-latest
+     
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+      
+    - name: Set up MongoDB
+      uses: supercharge/mongodb-github-action@1.8.0
+      with:
+        mongodb-version: '4.4'
+        
+    - name: Run database seed
+      run: npm run db:seed
+      
+    - name: Run database migrations
+      run: npm run migrate:up
+      
+  deploy-react:
+    needs: [build, deploy-mongodb]
+    name: Deploy React App
+    runs-on: ubuntu-latest
+     
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+      
+    - name: Download dist artifacts
+      uses: actions/download-artifact@v3
+      with:
+        name: dist-files
+        
+    - name: Deploy to S3
+      env:
+        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        AWS_REGION: ${{ env.AWS_REGION }}
+      run: |
+        aws s3 sync ./build s3://your-bucket-name --delete
