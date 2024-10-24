@@ -1,10 +1,7 @@
-name: CI/CD Pipeline
+name: AWS Deployment
 
 on:
   push:
-    branches:
-      - main
-  pull_request:
     branches:
       - main
 
@@ -17,125 +14,79 @@ jobs:
     runs-on: ubuntu-latest
     
     steps:
-    - uses: actions/checkout@v3
-    - name: Use Node.js
-      uses: actions/setup-node@v3
-      with:
-        node-version: '16'
-        
-    - run: npm ci
-    - run: npm run build
-    - run: npm test
-      
-    - name: Upload artifact
-      uses: actions/upload-artifact@v3
-      with:
-        name: dist-files
-        path: build
-        
-  deploy-eks:
-    needs: build
-    name: Deploy to EKS
-    runs-on: ubuntu-latest
-
-    steps:
     - name: Checkout
       uses: actions/checkout@v3
       
-    - name: Configure AWS credentials
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.x'
+        
+    - name: Install Python dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        
+    - name: Build Python package
+      run: python setup.py sdist bdist_wheel
+      
+    - name: Set up Go
+      uses: actions/setup-go@v3
+      with:
+        go-version: '^1.20.1'
+        
+    - name: Build Go binary
+      run: go build ./...
+      
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: dist-artifacts
+        path: |
+          dist
+          *.exe
+          
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Configure AWS Credentials
       uses: aws-actions/configure-aws-credentials@v1
       with:
         aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ env.AWS_REGION }}
         
-    - name: Login to Amazon ECR
-      run: aws ecr get-login-password --region ${{ env.AWS_REGION }} | docker login --username AWS --password-stdin ${{ secrets.AWS_ECR_URI }}
-      
-    - name: Build, tag, and push image to Amazon ECR
-      env:
-        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-        ECR_REPOSITORY: my-app
-        IMAGE_TAG: ${{ github.sha }}
-      run: |
-        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
-        docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
-        
-    - name: Deploy to Amazon EKS
-      env:
-        APP_NAME: my-app
-        DEPLOY_ENV: production
-      run: |
-        kubectl set image deployment/$APP_NAME-$DEPLOY_ENV app=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
-        
-  deploy-lambda:
-    needs: build
-    name: Deploy to Lambda
-    runs-on: ubuntu-latest
-    
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v3
-      
-    - name: Set up Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.9'
-        
-    - name: Install dependencies
-      run: pip install -r requirements.txt
-      
-    - name: Package Lambda function
-      run: zip -r lambda_function.zip .
-      
-    - name: Deploy to AWS Lambda
-      uses: aws-actions/aws-lambda-deploy@v0.1.1
-      with:
-        function-name: your_lambda_function_name
-        zip-file: lambda_function.zip
-      env:
-        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        AWS_REGION: ${{ env.AWS_REGION }}
-
-  deploy-mongodb:
-    needs: build  
-    name: Deploy to MongoDB
-    runs-on: ubuntu-latest
-     
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v3
-      
-    - name: Set up MongoDB
-      uses: supercharge/mongodb-github-action@1.8.0
-      with:
-        mongodb-version: '4.4'
-        
-    - name: Run database seed
-      run: npm run db:seed
-      
-    - name: Run database migrations
-      run: npm run migrate:up
-      
-  deploy-react:
-    needs: [build, deploy-mongodb]
-    name: Deploy React App
-    runs-on: ubuntu-latest
-     
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v3
-      
-    - name: Download dist artifacts
+    - name: Download artifacts
       uses: actions/download-artifact@v3
       with:
-        name: dist-files
+        name: dist-artifacts
         
-    - name: Deploy to S3
+    - name: Deploy to EKS
       env:
-        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        AWS_REGION: ${{ env.AWS_REGION }}
+        EKS_CLUSTER_NAME: ${{ secrets.EKS_CLUSTER_NAME }}
       run: |
-        aws s3 sync ./build s3://your-bucket-name --delete
+        aws eks update-kubeconfig --name $EKS_CLUSTER_NAME
+        kubectl apply -f k8s/
+        
+    - name: Deploy to API Gateway
+      env:
+        API_GATEWAY_ID: ${{ secrets.API_GATEWAY_ID }}  
+      run: aws apigateway put-rest-api --rest-api-id $API_GATEWAY_ID --body file://openapi.yml
+      
+    - name: Notification
+      uses: 8398a7/action-slack@v3
+      with:
+        status: ${{ job.status }}
+        fields: repo,message,commit,author,action,eventName,ref,workflow
+        author_name: Deployment workflow
+        mention: here
+        if_mention: failure,cancelled
+        job_name: AWS Deployment
+        channel: devops-notifications
+        icon_emoji: ':aws:'
+        username: GitHub Actions Workflow
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK }}
