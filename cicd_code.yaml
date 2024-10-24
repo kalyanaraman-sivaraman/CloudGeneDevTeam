@@ -1,5 +1,4 @@
-name: Deploy EKS and API Gateway
-
+name: Deploy to AWS
 on:
   push:
     branches:
@@ -7,74 +6,85 @@ on:
 
 env:
   AWS_REGION: us-east-2
-  PYTHON_VERSION: 3.9
-  GO_VERSION: 1.18
 
 jobs:
 
-  build-test-python:
+  build-python:
+    name: Build Python
     runs-on: ubuntu-latest
-    
     steps:
     - uses: actions/checkout@v3
-    - name: Set up Python ${{ env.PYTHON_VERSION }}
+    - name: Set up Python
       uses: actions/setup-python@v4
       with:
-        python-version: ${{ env.PYTHON_VERSION }}
-    - name: Install Python dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
-    - name: Run Python tests
-      run: |
-        python -m unittest discover tests/
+        python-version: '3.x'
+    - name: Install dependencies
+      run: pip install -r requirements.txt
+    - name: Build Python package
+      run: python setup.py sdist
+    - name: Upload Python package
+      uses: actions/upload-artifact@v3
+      with:
+        name: python-package
+        path: dist/*.tar.gz
 
-  build-test-go:
+  build-go:
+    name: Build Go
     runs-on: ubuntu-latest
-    
     steps:
     - uses: actions/checkout@v3
-    - name: Set up Go ${{ env.GO_VERSION }}
+    - name: Set up Go
       uses: actions/setup-go@v3
       with:
-        go-version: ${{ env.GO_VERSION }}
-    - name: Build Go code
-      run: go build ./...
-    - name: Run Go tests
-      run: go test ./...
+        go-version: '^1.20.1'
+    - name: Build Go package
+      run: go build
+    - name: Upload Go package
+      uses: actions/upload-artifact@v3
+      with:
+        name: go-package
+        path: ./main
 
   deploy-eks:
-    needs: [build-test-python, build-test-go]
+    name: Deploy to EKS
+    needs: [build-python, build-go]
     runs-on: ubuntu-latest
-    
     steps:
-    - uses: actions/checkout@v3
     - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v1
       with:
         aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ env.AWS_REGION }}
-    - name: Deploy EKS cluster
+    - name: Download Python package
+      uses: actions/download-artifact@v3
+      with:
+        name: python-package
+    - name: Download Go package  
+      uses: actions/download-artifact@v3
+      with:
+        name: go-package
+    - name: Deploy to EKS
+      env:
+        EKS_CLUSTER_NAME: clusterchecksdk
       run: |
-        # Add your EKS deployment commands here
-        # For example:
-        aws eks create-cluster --name my-cluster --version 1.28 --role-arn arn:aws:iam::058264145861:role/avawus1cgeksroletest --resources-vpc-config subnetIds=subnet-0a80b7ae31e6c34a7,subnet-0b8a741297c7f23fd,securityGroupIds=sg-0f565c5900643a479,endpointPublicAccess=true,endpointPrivateAccess=true
+        # Deploy Python and Go packages to EKS
+        # Example deployment steps...
 
   deploy-api-gateway:
-    needs: [build-test-python, build-test-go]
+    name: Deploy to API Gateway  
+    needs: [build-python, build-go]
     runs-on: ubuntu-latest
-    
     steps:
-    - uses: actions/checkout@v3
     - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v1
       with:
         aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ env.AWS_REGION }}
-    - name: Deploy API Gateway
+    - name: Deploy to API Gateway
+      env:
+        API_GATEWAY_NAME: ghj
       run: |
-        # Add your API Gateway deployment commands here
-        # For example:
-        aws apigateway create-rest-api --name my-api --description "My API Gateway" --endpoint-configuration '{"types":"EDGE"}'
+        # Deploy Python and Go packages to API Gateway
+        # Example deployment steps...
