@@ -1,92 +1,76 @@
-name: AWS Deployment
+name: DevOps CI/CD Pipeline
 
 on:
   push:
     branches:
       - main
 
-env:
-  AWS_REGION: us-east-2
-
 jobs:
 
   build:
+    name: Build Python
     runs-on: ubuntu-latest
-    
     steps:
-    - name: Checkout
-      uses: actions/checkout@v3
-      
-    - name: Set up Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.x'
-        
-    - name: Install Python dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
-        
-    - name: Build Python package
-      run: python setup.py sdist bdist_wheel
-      
-    - name: Set up Go
-      uses: actions/setup-go@v3
-      with:
-        go-version: '^1.20.1'
-        
-    - name: Build Go binary
-      run: go build ./...
-      
-    - name: Upload artifacts
-      uses: actions/upload-artifact@v3
-      with:
-        name: dist-artifacts
-        path: |
-          dist
-          *.exe
-          
-  deploy:
-    needs: build
+      - name: Checkout code
+        uses: actions/checkout@v2
+      - name: Set up Python
+        uses: actions/setup-python@v2
+        with:
+          python-version: '3.x'
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+      - name: Build Python
+        run: |
+          python -m compileall .
+
+  build-go:
+    name: Build Go
     runs-on: ubuntu-latest
-    
     steps:
-    - name: Configure AWS Credentials
-      uses: aws-actions/configure-aws-credentials@v1
-      with:
-        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: ${{ env.AWS_REGION }}
-        
-    - name: Download artifacts
-      uses: actions/download-artifact@v3
-      with:
-        name: dist-artifacts
-        
-    - name: Deploy to EKS
-      env:
-        EKS_CLUSTER_NAME: ${{ secrets.EKS_CLUSTER_NAME }}
-      run: |
-        aws eks update-kubeconfig --name $EKS_CLUSTER_NAME
-        kubectl apply -f k8s/
-        
-    - name: Deploy to API Gateway
-      env:
-        API_GATEWAY_ID: ${{ secrets.API_GATEWAY_ID }}  
-      run: aws apigateway put-rest-api --rest-api-id $API_GATEWAY_ID --body file://openapi.yml
-      
-    - name: Notification
-      uses: 8398a7/action-slack@v3
-      with:
-        status: ${{ job.status }}
-        fields: repo,message,commit,author,action,eventName,ref,workflow
-        author_name: Deployment workflow
-        mention: here
-        if_mention: failure,cancelled
-        job_name: AWS Deployment
-        channel: devops-notifications
-        icon_emoji: ':aws:'
-        username: GitHub Actions Workflow
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK }}
+      - name: Checkout code
+        uses: actions/checkout@v2
+      - name: Set up Go
+        uses: actions/setup-go@v2
+        with:
+          go-version: '^1.16'
+      - name: Build Go
+        run: go build ./...
+
+  test:
+    name: Test Python and Go
+    runs-on: ubuntu-latest
+    needs: [build, build-go]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+      - name: Run Python tests
+        run: |
+          python -m unittest discover tests/python
+      - name: Run Go tests
+        run: |
+          go test ./...
+
+  deploy-aws:
+    name: Deploy to AWS
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-2
+      - name: Deploy EKS
+        env:
+          EKS_CONFIG: ${{ secrets.EKS_CONFIG }}
+        run: |
+          aws eks create-cluster --cli-input-yaml file://${EKS_CONFIG}
+      - name: Deploy API Gateway
+        env:
+          API_CONFIG: ${{ secrets.API_CONFIG }}
+        run: |
+          aws apigateway import-rest-api --body file://${API_CONFIG}
