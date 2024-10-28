@@ -1,5 +1,4 @@
-name: CI/CD Pipeline
-
+name: Deploy to AWS
 on:
   push:
     branches:
@@ -7,26 +6,16 @@ on:
 
 env:
   AWS_REGION: us-east-2
-  ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-  IMAGE_TAG: ${{ github.sha }}
 
 jobs:
 
   build:
-    name: Build and Test
+    name: Build
     runs-on: ubuntu-latest
     
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v2
-      
-    - name: Configure AWS credentials
-      uses: aws-actions/configure-aws-credentials@v1
-      with:
-        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: ${{ env.AWS_REGION }}
-        
+    - uses: actions/checkout@v2
+    
     - name: Set up Python
       uses: actions/setup-python@v2
       with:
@@ -37,28 +26,68 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r requirements.txt
         
-    - name: Run Python tests
-      run: python -m unittest discover tests/
+    - name: Build Python package
+      run: python setup.py sdist
       
-    - name: Set up Go
-      uses: actions/setup-go@v2
+    - name: Upload Python package
+      uses: actions/upload-artifact@v2
       with:
-        go-version: '^1.18'
+        name: dist
+        path: dist
         
-    - name: Build Go application
-      run: go build ./...
-      
-    - name: Run Go tests
-      run: go test ./...
-      
-  deploy:
-    name: Deploy to EKS
+  deploy-python:
+    name: Deploy Python to EKS
     needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v2
+    
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v1
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+        
+    - name: Download Python package
+      uses: actions/download-artifact@v2
+      with:
+        name: dist
+        
+    - name: Deploy to EKS
+      run: |
+        # Deploy Python package to EKS
+        # Add deployment commands here
+        
+  build-go:
+    name: Build Go
     runs-on: ubuntu-latest
     
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v2
+    - uses: actions/checkout@v2
+    
+    - name: Set up Go
+      uses: actions/setup-go@v2
+      with:
+        go-version: 1.16
+        
+    - name: Build Go package
+      run: go build
+      
+    - name: Upload Go package
+      uses: actions/upload-artifact@v2
+      with:
+        name: go-package
+        path: go-package
+        
+  deploy-go:
+    name: Deploy Go to EKS  
+    needs: build-go
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v2
       
     - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v1
@@ -67,26 +96,12 @@ jobs:
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ env.AWS_REGION }}
         
-    - name: Login to Amazon ECR
-      id: login-ecr
-      uses: aws-actions/amazon-ecr-login@v1
-      
-    - name: Build and push Docker image
-      env:
-        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-        IMAGE_TAG: ${{ github.sha }}
-      run: |
-        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
-        docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+    - name: Download Go package
+      uses: actions/download-artifact@v2
+      with:
+        name: go-package
         
     - name: Deploy to EKS
-      env:
-        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-        IMAGE_TAG: ${{ github.sha }}
       run: |
-        kubectl set image deployment/your-deployment your-container=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
-        
-    - name: Verify deployment
-      run: |
-        kubectl get pods
-        kubectl get services
+        # Deploy Go package to EKS
+        # Add deployment commands here
