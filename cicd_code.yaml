@@ -1,99 +1,94 @@
-name: AWS Deployment
+name: Pipeline
+
 on:
   push:
     branches:
       - main
 
 env:
-  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
   AWS_REGION: us-east-2
+  ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
 
 jobs:
 
-  build-python:
-    name: Build Python
+  build:
+    name: Build & Test
     runs-on: ubuntu-latest
     
     steps:
-    - uses: actions/checkout@v2
+    - name: Checkout
+      uses: actions/checkout@v3
+      
     - name: Set up Python
-      uses: actions/setup-python@v2
+      uses: actions/setup-python@v4
       with:
         python-version: '3.x'
-    - name: Install dependencies
+        
+    - name: Install Python dependencies
       run: |
         python -m pip install --upgrade pip
         pip install -r requirements.txt
-    - name: Package Python app
-      run: |
-        zip -r python-app.zip .
-    - name: Upload Python artifact
-      uses: actions/upload-artifact@v2
-      with:
-        name: python-app
-        path: python-app.zip
-
-  build-go:
-    name: Build Go
-    runs-on: ubuntu-latest
-    
-    steps:
-    - uses: actions/checkout@v2
+        
     - name: Set up Go
-      uses: actions/setup-go@v2
+      uses: actions/setup-go@v3
       with:
-        go-version: '^1.16'
+        go-version: '1.19.x'
+        
+    - name: Install Go dependencies
+      run: go get ./...
+      
+    - name: Run tests
+      run: |
+        python -m unittest discover tests/
+        go test ./...
+        
+    - name: Build Python app
+      run: python setup.py sdist bdist_wheel
+      
     - name: Build Go app
-      run: go build
-    - name: Upload Go artifact
-      uses: actions/upload-artifact@v2
-      with:
-        name: go-app
-        path: go-app
-
-  deploy-eks:
-    name: Deploy to EKS
-    runs-on: ubuntu-latest
-    needs: [build-python, build-go]
-    
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v2
+      run: go build -o app
+      
     - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v1
       with:
-        aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ env.AWS_REGION }}
-    - name: Download Python artifact
-      uses: actions/download-artifact@v2
+        
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v1
+      
+    - name: Build and push Python image to Amazon ECR
+      run: |
+        docker build -t $ECR_REGISTRY/python-app:${{ github.sha }} .
+        docker push $ECR_REGISTRY/python-app:${{ github.sha }}
+        
+    - name: Build and push Go image to Amazon ECR  
+      run: |  
+        docker build -t $ECR_REGISTRY/go-app:${{ github.sha }} .
+        docker push $ECR_REGISTRY/go-app:${{ github.sha }}
+        
+  deploy:
+    name: Deploy
+    needs: build
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v1
       with:
-        name: python-app
-    - name: Download Go artifact
-      uses: actions/download-artifact@v2
-      with:
-        name: go-app
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+        
     - name: Deploy to EKS
       run: |
-        # Deploy Python and Go apps to EKS
-        # Add deployment steps here
-
-  deploy-api-gateway:
-    name: Deploy to API Gateway
-    runs-on: ubuntu-latest
-    needs: deploy-eks
-    
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v2
-    - name: Configure AWS credentials
-      uses: aws-actions/configure-aws-credentials@v1
-      with:
-        aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
-        aws-region: ${{ env.AWS_REGION }}
-    - name: Deploy to API Gateway
+        aws eks update-cluster --name clusterchecksdk --region ${{ env.AWS_REGION }}
+        kubectl set image deployment/python-app python-app=$ECR_REGISTRY/python-app:${{ github.sha }}
+        kubectl set image deployment/go-app go-app=$ECR_REGISTRY/go-app:${{ github.sha }}
+        
+    - name: Verify deployment    
       run: |
-        # Deploy API Gateway resources
-        # Add deployment steps here
+        kubectl get services
+        kubectl get pods
